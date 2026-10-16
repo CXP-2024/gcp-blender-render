@@ -12,6 +12,8 @@ param(
         'asia-southeast1-a', 'asia-southeast1-b', 'asia-southeast1-c'),
     [string]$Machine = 'g2-standard-8',
     [int]$DiskGB = 50,
+    [string]$DiskType = 'pd-balanced',
+    [string]$ImageFamily = 'blender-gpu',
     [int]$MaxHours = 8,
     [switch]$OnDemand,
     [switch]$Yes,
@@ -74,22 +76,32 @@ switch ($Action) {
     }
 
     'create' {
-        $image = (G compute images list --project deeplearning-platform-release `
-                --filter "family~'common-cu' AND family~ubuntu-2204" --format 'value(family)').Split("`n") |
-            ForEach-Object { $_.Trim() } | Where-Object { $_ } | Sort-Object -Unique | Select-Object -Last 1
-        if (-not $image) { throw 'No Deep Learning VM image family found.' }
+        # Prefer the user's own pre-built image (family $ImageFamily, see SKILL.md "Custom image"); fall back to the stock DLVM image.
+        $own = (G compute images describe-from-family $ImageFamily --project $Project --format 'value(name)').Trim()
+        if ($own -and $own -notmatch 'ERROR|not found') {
+            $imgArgs = @('--image', $own, '--image-project', $Project)
+            $meta = @()   # never pass install-nvidia-driver: the stock boot script can replace the baked driver
+            $imgDesc = "custom image $own (setup NOT needed)"
+        } else {
+            $image = (G compute images list --project deeplearning-platform-release `
+                    --filter "family~'common-cu' AND family~ubuntu-2204" --format 'value(family)').Split("`n") |
+                ForEach-Object { $_.Trim() } | Where-Object { $_ } | Sort-Object -Unique | Select-Object -Last 1
+            if (-not $image) { throw 'No Deep Learning VM image family found.' }
+            $imgArgs = @('--image-family', $image, '--image-project', 'deeplearning-platform-release')
+            $meta = @('--metadata', 'install-nvidia-driver=True')
+            $imgDesc = "stock image family $image (run -Action setup afterwards)"
+        }
         $model = if ($OnDemand) { 'STANDARD' } else { 'SPOT' }
-        "Plan: $Machine (1x L4), $model, ${DiskGB}GB pd-balanced, image family $image, auto-stop after ${MaxHours}h, zones tried in order."
+        "Plan: $Machine, $model, ${DiskGB}GB $DiskType, $imgDesc, auto-stop after ${MaxHours}h, zones tried in order."
         if (-not $Yes) { 'DRY RUN. Add -Yes to create (this starts billing).'; return }
         foreach ($z in $Zones) {
             $out = G compute instances create $Name --project $Project --zone $z --machine-type $Machine `
-                --image-family $image --image-project deeplearning-platform-release `
-                --boot-disk-size "${DiskGB}GB" --boot-disk-type pd-balanced `
+                @imgArgs --boot-disk-size "${DiskGB}GB" --boot-disk-type $DiskType `
                 --maintenance-policy TERMINATE --provisioning-model $model `
-                --instance-termination-action STOP --max-run-duration "${MaxHours}h" `
-                --metadata install-nvidia-driver=True
+                --instance-termination-action STOP --max-run-duration "${MaxHours}h" @meta
             if ($out -match 'RUNNING') { "CREATED in $z"; $out; return }
             $reason = [regex]::Match($out, 'reason: (\w+)').Groups[1].Value
+            if (-not $reason) { $reason = 'ERROR: ' + (($out -split "`n" | Where-Object { $_ -match '^\s*-|ERROR' } | Select-Object -First 2) -join ' ').Trim() }
             "$z : $reason"
             if ($out -match 'QUOTA' -or $reason -match 'QUOTA') { "Quota problem, stopping: $out"; return }
         }
@@ -107,8 +119,8 @@ switch ($Action) {
         $drv = (Invoke-Remote 'nvidia-smi --query-gpu=driver_version --format=csv,noheader').Trim()
         "Driver: $drv"
         if ($drv -match '^(\d+)\.' -and [int]$Matches[1] -lt 590) {
-            'Upgrading driver to 590-server (needed for OptiX with Blender 5.x) and rebooting...'
-            Invoke-Remote 'sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nvidia-driver-590-server 2>&1 | tail -2' | Out-Null
+            'Upgrading driver to 595-server-open (needed for OptiX with Blender 5.x; open module also supports Blackwell) and rebooting...'
+            Invoke-Remote 'sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nvidia-driver-595-server-open 2>&1 | tail -2' | Out-Null
             Invoke-Remote 'sudo reboot' | Out-Null
             Start-Sleep 60
             for ($i = 0; $i -lt 12; $i++) {
@@ -128,17 +140,42 @@ switch ($Action) {
         Push-Location $dir
         try { G compute scp $file "${Name}:job.blend" --project $Project --zone $z --quiet --strict-host-key-checking=no | Out-Null }
         finally { Pop-Location }
-        Invoke-Remote "mkdir -p ~/out; rm -f ~/out/*; nohup /snap/bin/blender -b ~/job.blend -o ~/out/f_#### -F $Format -s $Start -e $End -a -- --cycles-device $Device > ~/render.log 2>&1 &" | Out-Null
+        # A process started from the SSH session (nohup / setsid / &) is killed when the session ends (verified: Blender
+        # died during denoising right after the SSH call returned). Run it as a transient systemd unit instead, with
+        # absolute paths (a '~' launcher misbehaved under systemd). Poll the unit, not `pgrep -f` (matches itself).
+        $h = (Invoke-Remote 'echo $HOME').Trim().Split("`n")[-1].Trim()
+        $launcher = "#!/bin/bash`nH=$h`nmkdir -p `$H/out; rm -f `$H/out/*`nexec /snap/bin/blender -b `$H/job.blend -o `$H/out/f_#### -F $Format -s $Start -e $End -a -- --cycles-device $Device`n"
+        $tmp = Join-Path $env:TEMP 'gcp_render_launch.sh'
+        [IO.File]::WriteAllText($tmp, $launcher.Replace("`r`n", "`n"))
+        Push-Location (Split-Path $tmp)
+        try { G compute scp (Split-Path -Leaf $tmp) "${Name}:launch.sh" --project $Project --zone $z --quiet --strict-host-key-checking=no | Out-Null }
+        finally { Pop-Location }
+        # status.sh holds the pipes/quotes so Windows cmd.exe (gcloud.cmd) never sees them on the command line.
+        $statusSh = "#!/bin/bash`nH=$h`nsystemctl is-active blenderrender`nls `$H/out | wc -l`ngrep -E ' Time:' `$H/render.log | tail -1`ngrep -E 'Found no Cycles device|OptiX initialization failed' `$H/render.log | tail -1`n"
+        $tmp2 = Join-Path $env:TEMP 'gcp_render_status.sh'
+        [IO.File]::WriteAllText($tmp2, $statusSh.Replace("`r`n", "`n"))
+        Push-Location (Split-Path $tmp2)
+        try { G compute scp (Split-Path -Leaf $tmp2) "${Name}:status.sh" --project $Project --zone $z --quiet --strict-host-key-checking=no | Out-Null }
+        finally { Pop-Location }
+        # enable-linger keeps /run/user/UID alive after the last SSH session ends (suspected cause of Blender exiting at the denoise step)
+        $startCmd = 'H=' + $h + '; sudo loginctl enable-linger $(id -un); chmod +x $H/launch.sh; sudo systemctl reset-failed blenderrender 2>/dev/null; rm -f $H/render.log; ' +
+            'sudo systemd-run --unit=blenderrender --uid=$(id -u) --gid=$(id -g) --setenv=HOME=$H --working-directory=$H ' +
+            '-p StandardOutput=file:$H/render.log -p StandardError=file:$H/render.log $H/launch.sh'
+        Invoke-Remote $startCmd | Out-Null
         'Render started. Polling...'
-        while ($true) {
+        $deadline = (Get-Date).AddHours($MaxHours)
+        $seenRunning = $false
+        while ((Get-Date) -lt $deadline) {
             Start-Sleep 20
-            $s = Invoke-Remote "pgrep -f 'blender -b' >/dev/null && echo RUNNING || echo DONE; ls ~/out | wc -l; grep -E ' Time:' ~/render.log | tail -1; grep -E 'WARNING OptiX|Found no Cycles device' ~/render.log | tail -1"
+            $s = Invoke-Remote 'bash status.sh'
             $s.Trim()
-            if ($s -match 'DONE') { break }
-            if ($s -match 'TERMINATED|connection') { 'VM may have been preempted. Check -Action status.'; break }
+            if ($s -match '(?m)^active') { $seenRunning = $true; continue }
+            if (-not $seenRunning) { 'Unit already finished at the first poll (very fast job) or never started: check the frame count above and the log below.' }
+            if ($s -match 'TERMINATED|connection') { 'VM may have been preempted. Check -Action status.' }
+            break
         }
         'Last log lines:'
-        Invoke-Remote 'tail -5 ~/render.log'
+        Invoke-Remote 'tail -n 5 render.log'
     }
 
     'fetch' {
@@ -155,6 +192,7 @@ switch ($Action) {
         $remote = [int](Invoke-Remote 'ls ~/out | wc -l').Trim().Split("`n")[-1]
         $have = (Get-ChildItem $Local -File -ErrorAction SilentlyContinue).Count
         "Remote frames: $remote, local frames: $have"
+        if ($remote -eq 0 -and -not $Force) { throw 'No frames on the VM: the render probably failed. Inspect ~/render.log first (do not delete the evidence); -Force overrides.' }
         if ($remote -ne $have -and -not $Force) { throw 'Frame counts differ. Run -Action fetch first, or pass -Force.' }
         if (-not $Yes) { 'DRY RUN. Add -Yes to delete the VM and its disk.'; return }
         G compute instances delete $Name --project $Project --zone $z --quiet
