@@ -109,3 +109,7 @@ before any credit already used. The trial credit also expires (usually 90 days).
 - Short frames leave the GPU idle during scene prep and denoise; running 2 Blender processes on disjoint frame ranges
   can recover 10-40 %. Frames of several minutes already saturate the GPU. Check `nvidia-smi` utilisation first.
 - Consumer GeForce cards are not offered on Google Cloud.
+
+## 原神 / MMD 材质工作流
+
+涉及原神三渲二场景时，先读 [原神材质提交前检查](references/genshin-material-preflight.md)，并使用 genshin-blender-render 建立多光向全身与脸部试片基线，再执行本文的调度和资源管理。
