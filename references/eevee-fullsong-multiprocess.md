@@ -71,6 +71,20 @@ This run: VM ≈ 1.5 h × 1.63 USD ≈ 2.4 USD, but downloading 15 GB of PNG fra
 - The local RTX 5080 renders the same scene at ~1.1 s/frame (32 samples), ~2 h for the whole song at zero cost;
   use the cloud only when the 1 h saved matters, or split frames between both.
 
+## Cheapest measured route (v35 run, 2026-10-30): segmented RGB video download
+`vm_go.sh` starts 2 render units plus `vm_seg.sh`; `pull_seg.ps1` runs locally. Result: 6581 frames in ~55 min at 2.3
+frames/s (32 samples), VM ~1.05 h (~1.7 USD), ~1.65 GB download instead of 15 GB (~0.2-0.4 USD), about 2.1 USD in total.
+- `vm_seg.sh` encodes every finished 300-frame run with `libx264rgb -crf 12 -pix_fmt rgb24`: RGB directly, so no colour
+  matrix can go wrong. 70-80 MB per segment, 47.5 dB against the original PNG (mean difference 0.7/255).
+- `pull_seg.ps1` fetches segments, unpacks through a temp folder, runs Real-CUGAN, then moves frames into `frames/`, so SR
+  and later steps never see half-written files. Segments arrive as they finish: one at a time took ~110 s each,
+  including SR, which keeps up with the render.
+- Split the 1.3 GB upload into 4 parts and scp them in parallel: 195 s for upload plus Blender install.
+- Verify all frames and SR with PIL before deleting the VM, then start 2 `post_worker_fast.ps1`.
+- Render-time scan for transient cloth explosions before spending VM time: a per-frame extent/step scan of every MDD
+  takes minutes and would have avoided a second full render (see the repair script idea: temporal interpolation of
+  bad vertices, whole-object interpolation for rigid hung pieces).
+
 ## Fast 4K60 path (use this; measured on the RTX 5080)
 `post_4k60_fast.py` + 2x `post_worker_fast.ps1`: **~34 s per 300-source-frame part per worker, whole song ~7 min**,
 versus ~190 s per part with 3 x264 workers (~25 min). What changed:
