@@ -31,15 +31,17 @@ def ssim(a, b):
 u8 = lambda x: (x[0].clamp(0, 1) * 255).round().byte().permute(1, 2, 0).cpu().numpy()
 cuts = set(json.loads((R / 'cut_pairs.json').read_text())['cut_pairs']); out = R / 'post_parts'; out.mkdir(exist_ok=True)
 cmd = [FF, '-y', '-v', 'warning', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', '3840x2160', '-r', '60', '-i', '-', '-an', '-vf', 'scale=out_color_matrix=bt709:out_range=tv',
-       '-c:v', 'libx264', '-crf', '18', '-preset', 'medium', '-threads', '8', '-pix_fmt', 'yuv420p', '-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709', str(out / f'part_{part:02d}.mp4')]
+       *(['-c:v', 'libx264', '-crf', '18', '-preset', 'medium', '-threads', '8'] if os.environ.get('ENC', 'x264') == 'x264' else
+         ['-c:v', 'h264_nvenc', '-preset', 'p7', '-tune', 'hq', '-rc', 'vbr', '-cq', '19', '-b:v', '0', '-spatial-aq', '1', '-temporal-aq', '1']),
+       '-pix_fmt', 'yuv420p', '-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709', str(out / f'part_{part:02d}{os.environ.get("SUFFIX", "")}.mp4')]
 enc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=open(out / f'encode_{part:02d}.log', 'w'))
 begin = time.time(); held = 0
 with torch.inference_mode():
     for i in range(start, end):
         large = big(i); assert large.shape[-2:] == (2160, 3840), i; enc.stdin.write(u8(large).tobytes())
-        cut = i >= LAST                                                   # camera-flagged pairs include fast moves,
-        if not cut:                                                       # so a flag only holds when the image changes
-            small, nxt = src(i), src(i + 1); sv = ssim(small, nxt); cut = sv < .2 or (i in cuts and sv < .6)
+        cut = i >= LAST                                                   # real cuts measured < 0.2 SSIM; fast camera
+        if not cut:                                                       # moves stay 0.3-0.75, so only < 0.25 holds
+            small, nxt = src(i), src(i + 1); sv = ssim(small, nxt); cut = sv < .25
         if cut: middle = large; held += 1
         else:
             flows, mask, _ = net(torch.cat((pad(small), pad(nxt)), 1))

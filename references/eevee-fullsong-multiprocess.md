@@ -69,6 +69,22 @@ This run: VM ≈ 1.5 h × 1.63 USD ≈ 2.4 USD, but downloading 15 GB of PNG fra
 - The local RTX 5080 renders the same scene at ~1.1 s/frame (32 samples), ~2 h for the whole song at zero cost;
   use the cloud only when the 1 h saved matters, or split frames between both.
 
+## Encoder choice (300 SR 4K frames at 60 fps, local RTX 5080, times include ~1.9 s of PNG decode)
+| Encoder | Time | Size | SSIM |
+|---|---|---|---|
+| libx264 CRF18 medium, 8 threads | 16.2 s | 29 MB | 0.9916 |
+| h264_nvenc p7 hq CQ25 | 5.7 s | 38 MB | 0.9928 |
+| hevc_nvenc p7 hq CQ21 | 7.0 s | 19 MB | 0.9902 |
+| av1_nvenc p7 hq CQ26 | 4.0 s | 24 MB | 0.9917 |
+- NVENC is a separate encoder block on the GPU: ~3x faster than x264 and nearly no CPU, visually identical at these
+  rates. In this job x264 + 4K PNG I/O kept the CPU at 100 % while the GPU sat at ~40 %; NVENC should cut each
+  4K60 part by an estimated 30-50 % (PNG I/O and RIFE remain; not measured per part).
+- Default for new jobs: parts with `h264_nvenc -preset p7 -tune hq -rc vbr -cq 23 -b:v 0 -spatial-aq 1
+  -temporal-aq 1` (`ENC=nvenc` in `post_4k60.py`); `av1_nvenc` for archive / bandwidth-limited delivery.
+- Use one encoder and one parameter set for every part of a film, or `concat -c copy` may fail. Do not switch mid-job.
+- The VM-side `vm_encode.sh` (CRF 12, yuv444p) is about egress, not delivery; keep it on x264 (Linux VM, no NVENC
+  session limits to worry about) or use NVENC if the VM GPU is idle.
+
 ## Windows / shell pitfalls hit this time
 - From Git Bash, `gcloud.cmd compute ssh ... --command "..."` under `C:\Program Files (x86)` fails
   (`'C:\Program' is not recognized`); scp worked. Drive gcloud from PowerShell.
