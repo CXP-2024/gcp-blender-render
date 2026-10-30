@@ -57,8 +57,8 @@ frames), edit/save the blend on the VM if needed, start again over the full rang
 - Run 3 copies of `post_worker.ps1` (atomic `.lock` claim per part, `.done` when finished). The earlier
   `post_loop.ps1` / `post_loop_rev.ps1` pair raced and re-encoded finished parts; do not use them. 3 workers fill a
   16-core CPU with x264; verify every part has 2x its source frames before the mux.
-- Camera-cut detection from camera motion flags fast moves too (361 "cuts"): hold a frame only when a flagged pair
-  also has SSIM < 0.6 (or any pair < 0.2).
+- Hold a frame only at MMD camera hard cuts (keys one frame apart, `cut_pairs_cam.json`). Camera motion flags fast moves
+  too (361 "cuts"), and SSIM holds stutter fast sweeps. `post_4k60.py` still has the old SSIM rule: use `post_4k60_fast.py`.
 - `final_mux.sh`: check every part has 2x its source frames, concat with `-c copy`, audio offset = the VSE strip
   start (frame 1 → 1/30 s), no `-shortest` (the song ends 0.6 s before the video).
 
