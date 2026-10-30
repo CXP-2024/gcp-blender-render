@@ -1,7 +1,7 @@
 # Pull finished segments (seg_XX.mp4, RGB x264 CRF 12) from the VM, up to 4 at a time, unpack each to frames\ through a
 # temp folder (frames appear atomically), then 2x Real-CUGAN them into sr\. Stops when all 22 segments are local.
 $g = "C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd"; $z = 'us-central1-b'; $D = 'H:\MV_making\render_jobs\aibo_v35'
-$ff = 'D:\Users\Furina\Downloads\ffmpeg\bin\ffmpeg.exe'; $rc = 'H:\MV_making\senren_ai_op\tools\realcugan\realcugan-ncnn-vulkan-20220728-windows'
+$ff = 'ffmpeg'; $rc = 'H:\MV_making\senren_ai_op\tools\realcugan\realcugan-ncnn-vulkan-20220728-windows'
 Set-Location $D; New-Item -ItemType Directory -Force frames, sr, seg | Out-Null
 while ($true) {
     $have = @(Get-ChildItem seg -Filter 'seg_*.done').Count

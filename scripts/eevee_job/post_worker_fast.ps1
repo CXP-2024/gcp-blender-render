@@ -1,6 +1,6 @@
 # One 4K60 part worker; run several. A part is claimed by creating post_parts\part_XX.lock (New-Item without -Force
 # fails if another worker made it first), finished with part_XX.done; parts with .done or .lock are skipped.
-$D = 'H:\MV_making\render_jobs\aibo_v32'; Set-Location $D
+$D = 'H:\MV_making\render_jobs\aibo_v32'; Set-Location $D; New-Item -ItemType Directory -Force post_parts | Out-Null
 $py = 'H:\MiniMaxH3\.venv\Scripts\python.exe'; $N = 6581; $PartLen = 300; $parts = [int][math]::Ceiling($N / $PartLen)
 while ($true) {
     $mine = $null
