@@ -17,6 +17,16 @@ NVIDIA open kernel driver 595, Blender 5.2.2 LTS (snap), OptiX. Scripts are in `
 - Billing is per second (1 minute minimum). Console/API costs and the free-trial credit balance lag hours to a day
   and cannot be read through the CLI or API. Tell the user to check Billing > Credits / Reports in the console.
 - Never store a project id, billing account id, token or email in this repo. Use `-Project` or `gcloud config`.
+- **Save money and egress (user rule).** Upload (ingress) is free; every GB downloaded from the VM is billed
+  (~0.12 USD/GB, more toward mainland China), and 15 GB of PNG frames cost as much as the whole GPU time once.
+  - Never download raw PNG frame sequences. Encode on the VM first to a visually lossless 1080p video
+    (`ffmpeg -framerate 30 -i out/f_%04d.png -c:v libx264 -crf 12 -preset slow -pix_fmt yuv444p frames.mp4`,
+    ~1 GB per 3.5 min), download that, extract frames locally for SR/RIFE. Download only finished deliverables.
+  - Run at the measured best settings from the first minute (local 3-frame test of samples and resolution, 2 EEVEE
+    processes per PRO 6000, 32 samples for toon): no mid-run experiments on the billed VM.
+  - Prefer a custom image with the needed Blender version baked in; delete the VM the moment the files are verified.
+  - Before renting, compare with the local GPU (RTX 5080 ≈ half a PRO 6000 for EEVEE, zero cost) and tell the user the
+    estimated VM hours, egress GB and USD.
 
 ## Prerequisites
 1. Google Cloud CLI. Not necessarily on PATH (Windows: `C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd`); the script finds it.
@@ -64,6 +74,13 @@ $s = "<skill dir>\scripts\gcp_render.ps1"
 ```
 Preempted Spot VM: `gcloud compute instances start`, then `render` again with `-Start` at the next missing frame.
 Disk survives preemption, not `delete`.
+
+## Full-length EEVEE jobs (read first for any song-length render)
+[references/eevee-fullsong-multiprocess.md](references/eevee-fullsong-multiprocess.md), scripts in `scripts/eevee_job/`.
+Short version: measure 3 frames locally first; lower resolution does not speed EEVEE, samples do (32 is enough for
+toon, PSNR > 51 dB, 2x faster); **2 Blender processes per PRO 6000** (6 starve, 12 fill 96 GB VRAM); always `-y`;
+pack + repoint MDD caches and diff a frame against the original; download during the render with 4 parallel scp
+streams (1 stream ≈ 3 MB/s, 4 ≈ 10 MB/s) — but download an encoded video, not PNGs (`vm_encode.sh`); local Real-CUGAN 2x + RIFE 4K60 overlapped with the render.
 
 ## Lessons learned (each cost real time)
 - **A process started from the SSH session dies when the session ends** (nohup, setsid and `&` all failed: Blender
@@ -113,3 +130,8 @@ before any credit already used. The trial credit also expires (usually 90 days).
 ## 原神 / MMD 材质工作流
 
 涉及原神三渲二场景时，先读 [原神材质提交前检查](references/genshin-material-preflight.md)，并使用 genshin-blender-render 建立多光向全身与脸部试片基线，再执行本文的调度和资源管理。
+
+## MiniMax H3 视频生成
+
+G4 / RTX PRO 6000 也已完成 H3 原生 1920×1088 Ref2VA 短镜头生成。H3 的模型、ComfyUI、两阶段缓存和专用镜像与 Blender 不同，按 [H3 云端工作流记录](../render-submit-queue/references/gcp-pro6000-h3.md) 执行；本 skill 的云实例生命周期工具可复用，但不要运行 Blender setup/render 代替 H3。
+
