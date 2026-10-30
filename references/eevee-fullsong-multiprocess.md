@@ -54,7 +54,9 @@ frames), edit/save the blend on the VM if needed, start again over the full rang
 - Interpolation: `post_4k60.py` = RIFE HDv3 fp16 flow at 1080p (padded to 1088), flow ×2 applied to the SR frames,
   no blending of whole frames; x264 crf 18 4K60 parts of 300 source frames, ~2 min per part per process.
   Uses the `H:\MiniMaxH3\.venv` torch (CUDA) with PIL only: the system Python has no CUDA torch, the venv has no cv2.
-- Two part loops (`post_loop.ps1` forward, `post_loop_rev.ps1` backward with claim files) run as parts become ready.
+- Run 3 copies of `post_worker.ps1` (atomic `.lock` claim per part, `.done` when finished). The earlier
+  `post_loop.ps1` / `post_loop_rev.ps1` pair raced and re-encoded finished parts; do not use them. 3 workers fill a
+  16-core CPU with x264; verify every part has 2x its source frames before the mux.
 - Camera-cut detection from camera motion flags fast moves too (361 "cuts"): hold a frame only when a flagged pair
   also has SSIM < 0.6 (or any pair < 0.2).
 - `final_mux.sh`: check every part has 2x its source frames, concat with `-c copy`, audio offset = the VSE strip
