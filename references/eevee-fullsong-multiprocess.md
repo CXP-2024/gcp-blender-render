@@ -71,6 +71,19 @@ This run: VM ≈ 1.5 h × 1.63 USD ≈ 2.4 USD, but downloading 15 GB of PNG fra
 - The local RTX 5080 renders the same scene at ~1.1 s/frame (32 samples), ~2 h for the whole song at zero cost;
   use the cloud only when the 1 h saved matters, or split frames between both.
 
+## Fast 4K60 path (use this; measured on the RTX 5080)
+`post_4k60_fast.py` + 2x `post_worker_fast.ps1`: **~34 s per 300-source-frame part per worker, whole song ~7 min**,
+versus ~190 s per part with 3 x264 workers (~25 min). What changed:
+- each SR/source PNG is decoded once on a prefetch thread and reused for the next pair (the old loop read every 4K
+  frame twice);
+- RGB -> BT.709 limited YUV 4:2:0 on the GPU, raw yuv420p piped to `h264_nvenc` (p7, hq, CQ 22): no CPU swscale, half
+  the pipe bytes, CPU no longer pinned;
+- **tag the raw input** (`-color_range tv -colorspace bt709` before `-i -`): untagged raw made ffmpeg insert its own
+  range conversion and shifted luma by -3 (PSNR-Y 37 dB); tagged, it matches the SR source (Y offset 0.03, PSNR-Y 48 dB);
+- CQ 19 doubled the size of x264 CRF 18 parts; CQ 22 is about the same size and still ≥ x264 quality.
+- Cuts come from MMD camera keys one frame apart (`cut_pairs_cam.json`), never from image SSIM: SSIM-based holds froze
+  every fast camera sweep at 30 fps (user-visible stutter at 26-28 s).
+
 ## Encoder choice (300 SR 4K frames at 60 fps, local RTX 5080, times include ~1.9 s of PNG decode)
 | Encoder | Time | Size | SSIM |
 |---|---|---|---|
